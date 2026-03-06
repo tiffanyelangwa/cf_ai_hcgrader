@@ -1,757 +1,359 @@
 import { Suspense, useCallback, useState, useEffect, useRef } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { isToolUIPart, getToolName } from "ai";
 import type { UIMessage } from "ai";
-import type { MCPServersState } from "agents";
-import {
-  Button,
-  Badge,
-  InputArea,
-  Empty,
-  Surface,
-  Text
-} from "@cloudflare/kumo";
-import { Toasty, useKumoToastManager } from "@cloudflare/kumo/components/toast";
 import { Streamdown } from "streamdown";
-import { Switch } from "@cloudflare/kumo";
-import {
-  PaperPlaneRightIcon,
-  StopIcon,
-  TrashIcon,
-  GearIcon,
-  ChatCircleDotsIcon,
-  CircleIcon,
-  MoonIcon,
-  SunIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  BrainIcon,
-  CaretDownIcon,
-  BugIcon,
-  PlugsConnectedIcon,
-  PlusIcon,
-  SignInIcon,
-  XIcon,
-  WrenchIcon
-} from "@phosphor-icons/react";
+import { HC_DATA } from "./hc-content";
 
-// ── Small components ──────────────────────────────────────────────────
+const COURSES = [
+  {
+    id: "multimodal", label: "Multimodal Communications", available: true,
+    hcs: [
+      { id: "audience", label: "#audience", description: "Tailor work to your audience" },
+      { id: "composition", label: "#composition", description: "Clear and precise style" },
+      { id: "connotation", label: "#connotation", description: "Use connotations, tone, and style" },
+      { id: "organization", label: "#organization", description: "Effectively organize communications" },
+      { id: "professionalism", label: "#professionalism", description: "Present work professionally" },
+      { id: "thesis", label: "#thesis", description: "Formulate a well-defined thesis (CASPER)" },
+      { id: "communicationdesign", label: "#communicationdesign", description: "Apply perception & cognition principles" },
+      { id: "expression", label: "#expression", description: "Utilize nonverbal communication" },
+      { id: "medium", label: "#medium", description: "Analyze communicative mediums" },
+      { id: "multimedia", label: "#multimedia", description: "Craft layered modality communications" },
+      { id: "persuasion", label: "#persuasion", description: "Craft persuasive communications" },
+      { id: "designthinking", label: "#designthinking", description: "Apply iterative design thinking" },
+      { id: "context", label: "#context", description: "Situate work in relevant context" },
+      { id: "critique", label: "#critique", description: "Critically engage with texts" },
+      { id: "interpretivelens", label: "#interpretivelens", description: "Recognize how experience affects interpretation" },
+      { id: "evidencebased", label: "#evidencebased", description: "Structure information to support arguments" },
+      { id: "sourcequality", label: "#sourcequality", description: "Determine source quality (CRAAP)" },
+    ]
+  },
+  { id: "empirical", label: "Empirical Analyses", available: false, hcs: [] },
+  { id: "complex", label: "Complex Systems", available: false, hcs: [] },
+  { id: "formal", label: "Formal Analyses", available: false, hcs: [] },
+];
 
-function ThemeToggle() {
-  const [dark, setDark] = useState(
-    () => document.documentElement.getAttribute("data-mode") === "dark"
-  );
+const MODES = [
+  { id: "grade", label: "📊 Grade my work", description: "Get a 0–5 score with rubric feedback" },
+  { id: "footnote", label: "📝 Write my footnote", description: "Generate a footnote showing HC application" },
+  { id: "tips", label: "💡 Tips to improve", description: "Specific suggestions to level up" },
+];
 
-  const toggle = useCallback(() => {
+function HCGrader() {
+  const [connected, setConnected] = useState(false);
+  const [selectedCourse, setSelectedCourse] = useState("");
+  const [selectedHCs, setSelectedHCs] = useState<string[]>([]);
+  const [selectedModes, setSelectedModes] = useState<string[]>(["grade", "footnote", "tips"]);
+  const [studentWork, setStudentWork] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  const [dark, setDark] = useState(false);
+  const [courseOpen, setCourseOpen] = useState(false);
+  const [gradingQueue, setGradingQueue] = useState<string[]>([]);
+  const [currentHCIndex, setCurrentHCIndex] = useState(0);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const courseDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "dark") {
+      setDark(true);
+      document.documentElement.setAttribute("data-mode", "dark");
+      document.documentElement.style.colorScheme = "dark";
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!courseOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (courseDropdownRef.current && !courseDropdownRef.current.contains(e.target as Node)) {
+        setCourseOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [courseOpen]);
+
+  const toggleTheme = () => {
     const next = !dark;
     setDark(next);
     const mode = next ? "dark" : "light";
     document.documentElement.setAttribute("data-mode", mode);
     document.documentElement.style.colorScheme = mode;
     localStorage.setItem("theme", mode);
-  }, [dark]);
-
-  return (
-    <Button
-      variant="secondary"
-      shape="square"
-      icon={dark ? <SunIcon size={16} /> : <MoonIcon size={16} />}
-      onClick={toggle}
-      aria-label="Toggle theme"
-    />
-  );
-}
-
-// ── Tool rendering ────────────────────────────────────────────────────
-
-function ToolPartView({
-  part,
-  addToolApprovalResponse
-}: {
-  part: UIMessage["parts"][number];
-  addToolApprovalResponse: (response: {
-    id: string;
-    approved: boolean;
-  }) => void;
-}) {
-  if (!isToolUIPart(part)) return null;
-  const toolName = getToolName(part);
-
-  // Completed
-  if (part.state === "output-available") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2 mb-1">
-            <GearIcon size={14} className="text-kumo-inactive" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="secondary">Done</Badge>
-          </div>
-          <div className="font-mono">
-            <Text size="xs" variant="secondary">
-              {JSON.stringify(part.output, null, 2)}
-            </Text>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Needs approval
-  if ("approval" in part && part.state === "approval-requested") {
-    const approvalId = (part.approval as { id?: string })?.id;
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-3 rounded-xl ring-2 ring-kumo-warning">
-          <div className="flex items-center gap-2 mb-2">
-            <GearIcon size={14} className="text-kumo-warning" />
-            <Text size="sm" bold>
-              Approval needed: {toolName}
-            </Text>
-          </div>
-          <div className="font-mono mb-3">
-            <Text size="xs" variant="secondary">
-              {JSON.stringify(part.input, null, 2)}
-            </Text>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              icon={<CheckCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: true });
-                }
-              }}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<XCircleIcon size={14} />}
-              onClick={() => {
-                if (approvalId) {
-                  addToolApprovalResponse({ id: approvalId, approved: false });
-                }
-              }}
-            >
-              Reject
-            </Button>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Rejected / denied
-  if (
-    part.state === "output-denied" ||
-    ("approval" in part &&
-      (part.approval as { approved?: boolean })?.approved === false)
-  ) {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <XCircleIcon size={14} className="text-kumo-danger" />
-            <Text size="xs" variant="secondary" bold>
-              {toolName}
-            </Text>
-            <Badge variant="secondary">Rejected</Badge>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  // Executing
-  if (part.state === "input-available" || part.state === "input-streaming") {
-    return (
-      <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
-          <div className="flex items-center gap-2">
-            <GearIcon size={14} className="text-kumo-inactive animate-spin" />
-            <Text size="xs" variant="secondary">
-              Running {toolName}...
-            </Text>
-          </div>
-        </Surface>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-// ── Main chat ─────────────────────────────────────────────────────────
-
-function Chat() {
-  const [connected, setConnected] = useState(false);
-  const [input, setInput] = useState("");
-  const [showDebug, setShowDebug] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const toasts = useKumoToastManager();
-  const [mcpState, setMcpState] = useState<MCPServersState>({
-    prompts: [],
-    resources: [],
-    servers: {},
-    tools: []
-  });
-  const [showMcpPanel, setShowMcpPanel] = useState(false);
-  const [mcpName, setMcpName] = useState("");
-  const [mcpUrl, setMcpUrl] = useState("");
-  const [isAddingServer, setIsAddingServer] = useState(false);
-  const mcpPanelRef = useRef<HTMLDivElement>(null);
+  };
 
   const agent = useAgent({
     agent: "ChatAgent",
     onOpen: useCallback(() => setConnected(true), []),
     onClose: useCallback(() => setConnected(false), []),
-    onError: useCallback(
-      (error: Event) => console.error("WebSocket error:", error),
-      []
-    ),
-    onMcpUpdate: useCallback((state: MCPServersState) => {
-      setMcpState(state);
-    }, []),
-    onMessage: useCallback(
-      (message: MessageEvent) => {
-        try {
-          const data = JSON.parse(String(message.data));
-          if (data.type === "scheduled-task") {
-            toasts.add({
-              title: "Scheduled task completed",
-              description: data.description,
-              timeout: 0
-            });
-          }
-        } catch {
-          // Not JSON or not our event
-        }
-      },
-      [toasts]
-    )
   });
 
-  // Close MCP panel when clicking outside
-  useEffect(() => {
-    if (!showMcpPanel) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (
-        mcpPanelRef.current &&
-        !mcpPanelRef.current.contains(e.target as Node)
-      ) {
-        setShowMcpPanel(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showMcpPanel]);
-
-  const handleAddServer = async () => {
-    if (!mcpName.trim() || !mcpUrl.trim()) return;
-    setIsAddingServer(true);
-    try {
-      await agent.call("addServer", [
-        mcpName.trim(),
-        mcpUrl.trim(),
-        window.location.origin
-      ]);
-      setMcpName("");
-      setMcpUrl("");
-    } catch (e) {
-      console.error("Failed to add MCP server:", e);
-    } finally {
-      setIsAddingServer(false);
-    }
-  };
-
-  const handleRemoveServer = async (serverId: string) => {
-    try {
-      await agent.call("removeServer", [serverId]);
-    } catch (e) {
-      console.error("Failed to remove MCP server:", e);
-    }
-  };
-
-  const serverEntries = Object.entries(mcpState.servers);
-  const mcpToolCount = mcpState.tools.length;
-
-  const {
-    messages,
-    sendMessage,
-    clearHistory,
-    addToolApprovalResponse,
-    stop,
-    status
-  } = useAgentChat({
-    agent,
-    onToolCall: async (event) => {
-      if (
-        "addToolOutput" in event &&
-        event.toolCall.toolName === "getUserTimezone"
-      ) {
-        event.addToolOutput({
-          toolCallId: event.toolCall.toolCallId,
-          output: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            localTime: new Date().toLocaleTimeString()
-          }
-        });
-      }
-    }
-  });
-
+  const { messages, sendMessage, clearHistory, status } = useAgentChat({ agent });
   const isStreaming = status === "streaming" || status === "submitted";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Re-focus the input after streaming ends
+  // Sequential HC grading — one HC per message with full HC definition embedded
   useEffect(() => {
-    if (!isStreaming && textareaRef.current) {
-      textareaRef.current.focus();
-    }
-  }, [isStreaming]);
+    if (gradingQueue.length === 0) return;
+    if (isStreaming) return;
+    if (currentHCIndex >= gradingQueue.length) return;
 
-  const send = useCallback(() => {
-    const text = input.trim();
-    if (!text || isStreaming) return;
-    setInput("");
-    sendMessage({ role: "user", parts: [{ type: "text", text }] });
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
-  }, [input, isStreaming, sendMessage]);
+    const hcId = gradingQueue[currentHCIndex];
+    const course = COURSES.find(c => c.id === selectedCourse);
+    const hc = course?.hcs.find(h => h.id === hcId);
+    if (!hc) return;
+
+    const includeFootnote = selectedModes.includes("footnote");
+    const includeTips = selectedModes.includes("tips");
+    const hcDefinition = HC_DATA[hcId] || "";
+
+    const isFirst = currentHCIndex === 0;
+
+    const footnoteNote = includeFootnote ? "\n\nAlso write a **Footnote** section after **What a 5 Would Look Like**." : "";
+    const tipsNote = includeTips ? " After the main sections, add a **Bonus Tips** section with 2 extra specific tips." : "";
+
+    const message = isFirst
+      ? `Please grade my work for ${hc.label} (${currentHCIndex + 1} of ${gradingQueue.length}).${tipsNote}${footnoteNote}\n\n## HC DEFINITION\n${hcDefinition}\n\n## STUDENT WORK\n${studentWork.trim()}`
+      : `Now grade the same student work for ${hc.label} (${currentHCIndex + 1} of ${gradingQueue.length}).${tipsNote}${footnoteNote}\n\n## HC DEFINITION\n${hcDefinition}`;
+
+    sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
+    setCurrentHCIndex(i => i + 1);
+  }, [gradingQueue, currentHCIndex, isStreaming, studentWork, selectedModes, selectedCourse]);
+
+  const handleGrade = useCallback(() => {
+    if (!selectedHCs.length || !studentWork.trim() || !selectedModes.length) return;
+    setGradingQueue(selectedHCs);
+    setCurrentHCIndex(0);
+    setSubmitted(true);
+  }, [selectedHCs, studentWork, selectedModes]);
+
+  const handleChat = useCallback(() => {
+    if (!chatInput.trim() || isStreaming) return;
+    sendMessage({ role: "user", parts: [{ type: "text", text: chatInput.trim() }] });
+    setChatInput("");
+  }, [chatInput, isStreaming, sendMessage]);
+
+  const handleReset = () => {
+    clearHistory();
+    setSelectedCourse("");
+    setSelectedHCs([]);
+    setStudentWork("");
+    setChatInput("");
+    setSubmitted(false);
+    setSelectedModes(["grade", "footnote", "tips"]);
+    setGradingQueue([]);
+    setCurrentHCIndex(0);
+  };
+
+  const course = COURSES.find(c => c.id === selectedCourse);
+  const toggleHC = (hcId: string) => setSelectedHCs(prev => prev.includes(hcId) ? prev.filter(h => h !== hcId) : [...prev, hcId]);
+  const toggleMode = (modeId: string) => setSelectedModes(prev => prev.includes(modeId) ? prev.filter(m => m !== modeId) : [...prev, modeId]);
+
+  const bg = dark ? "#0f1117" : "#f4f5f7";
+  const surface = dark ? "#1a1d27" : "#ffffff";
+  const border = dark ? "#2a2d3a" : "#e5e7eb";
+  const text = dark ? "#e8eaf0" : "#111827";
+  const textSecondary = dark ? "#8b8fa8" : "#6b7280";
+  const accent = "#f6821f";
+  const inputBg = dark ? "#0f1117" : "#f9fafb";
+  const canSubmit = selectedHCs.length > 0 && studentWork.trim() && selectedModes.length > 0 && connected;
+
+  const gradingProgress = gradingQueue.length > 0
+    ? `Grading ${Math.min(currentHCIndex, gradingQueue.length)} of ${gradingQueue.length} HCs...`
+    : null;
 
   return (
-    <div className="flex flex-col h-screen bg-kumo-elevated">
-      {/* Header */}
-      <header className="px-5 py-4 bg-kumo-base border-b border-kumo-line">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold text-kumo-default">
-              <span className="mr-2">⛅</span>Agent Starter
-            </h1>
-            <Badge variant="secondary">
-              <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
-              AI Chat
-            </Badge>
+    <div style={{ minHeight: "100vh", background: bg, color: text, fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <header style={{ background: surface, borderBottom: `1px solid ${border}`, padding: "14px 24px", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ maxWidth: 820, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📋</div>
+            <div>
+              <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>HC Grader</h1>
+              <p style={{ margin: 0, fontSize: 11, color: textSecondary }}>Minerva University · Cornerstone Courses</p>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <CircleIcon
-                size={8}
-                weight="fill"
-                className={connected ? "text-kumo-success" : "text-kumo-danger"}
-              />
-              <Text size="xs" variant="secondary">
-                {connected ? "Connected" : "Disconnected"}
-              </Text>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {gradingProgress && <span style={{ fontSize: 12, color: accent, fontWeight: 600 }}>{gradingProgress}</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "#22c55e" : "#ef4444" }} />
+              <span style={{ fontSize: 12, color: textSecondary }}>{connected ? "Connected" : "Connecting..."}</span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <BugIcon size={14} className="text-kumo-inactive" />
-              <Switch
-                checked={showDebug}
-                onCheckedChange={setShowDebug}
-                size="sm"
-                aria-label="Toggle debug mode"
-              />
-            </div>
-            <ThemeToggle />
-            <div className="relative" ref={mcpPanelRef}>
-              <Button
-                variant="secondary"
-                icon={<PlugsConnectedIcon size={16} />}
-                onClick={() => setShowMcpPanel(!showMcpPanel)}
-              >
-                MCP
-                {mcpToolCount > 0 && (
-                  <Badge variant="primary" className="ml-1.5">
-                    <WrenchIcon size={10} className="mr-0.5" />
-                    {mcpToolCount}
-                  </Badge>
-                )}
-              </Button>
-
-              {/* MCP Dropdown Panel */}
-              {showMcpPanel && (
-                <div className="absolute right-0 top-full mt-2 w-96 z-50">
-                  <Surface className="rounded-xl ring ring-kumo-line shadow-lg p-4 space-y-4">
-                    {/* Panel Header */}
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <PlugsConnectedIcon
-                          size={16}
-                          className="text-kumo-accent"
-                        />
-                        <Text size="sm" bold>
-                          MCP Servers
-                        </Text>
-                        {serverEntries.length > 0 && (
-                          <Badge variant="secondary">
-                            {serverEntries.length}
-                          </Badge>
-                        )}
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        shape="square"
-                        aria-label="Close MCP panel"
-                        icon={<XIcon size={14} />}
-                        onClick={() => setShowMcpPanel(false)}
-                      />
-                    </div>
-
-                    {/* Add Server Form */}
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleAddServer();
-                      }}
-                      className="space-y-2"
-                    >
-                      <input
-                        type="text"
-                        value={mcpName}
-                        onChange={(e) => setMcpName(e.target.value)}
-                        placeholder="Server name"
-                        className="w-full px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent"
-                      />
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={mcpUrl}
-                          onChange={(e) => setMcpUrl(e.target.value)}
-                          placeholder="https://mcp.example.com"
-                          className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:ring-1 focus:ring-kumo-accent font-mono"
-                        />
-                        <Button
-                          type="submit"
-                          variant="primary"
-                          size="sm"
-                          icon={<PlusIcon size={14} />}
-                          disabled={
-                            isAddingServer || !mcpName.trim() || !mcpUrl.trim()
-                          }
-                        >
-                          {isAddingServer ? "..." : "Add"}
-                        </Button>
-                      </div>
-                    </form>
-
-                    {/* Server List */}
-                    {serverEntries.length > 0 && (
-                      <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {serverEntries.map(([id, server]) => (
-                          <div
-                            key={id}
-                            className="flex items-start justify-between p-2.5 rounded-lg border border-kumo-line"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-kumo-default truncate">
-                                  {server.name}
-                                </span>
-                                <Badge
-                                  variant={
-                                    server.state === "ready"
-                                      ? "primary"
-                                      : server.state === "failed"
-                                        ? "destructive"
-                                        : "secondary"
-                                  }
-                                >
-                                  {server.state}
-                                </Badge>
-                              </div>
-                              <span className="text-xs font-mono text-kumo-subtle truncate block mt-0.5">
-                                {server.server_url}
-                              </span>
-                              {server.state === "failed" && server.error && (
-                                <span className="text-xs text-red-500 block mt-0.5">
-                                  {server.error}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0 ml-2">
-                              {server.state === "authenticating" &&
-                                server.auth_url && (
-                                  <Button
-                                    variant="primary"
-                                    size="sm"
-                                    icon={<SignInIcon size={12} />}
-                                    onClick={() =>
-                                      window.open(
-                                        server.auth_url as string,
-                                        "oauth",
-                                        "width=600,height=800"
-                                      )
-                                    }
-                                  >
-                                    Auth
-                                  </Button>
-                                )}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                shape="square"
-                                aria-label="Remove server"
-                                icon={<TrashIcon size={12} />}
-                                onClick={() => handleRemoveServer(id)}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Tool Summary */}
-                    {mcpToolCount > 0 && (
-                      <div className="pt-2 border-t border-kumo-line">
-                        <div className="flex items-center gap-2">
-                          <WrenchIcon size={14} className="text-kumo-subtle" />
-                          <span className="text-xs text-kumo-subtle">
-                            {mcpToolCount} tool
-                            {mcpToolCount !== 1 ? "s" : ""} available from MCP
-                            servers
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </Surface>
-                </div>
-              )}
-            </div>
-            <Button
-              variant="secondary"
-              icon={<TrashIcon size={16} />}
-              onClick={clearHistory}
-            >
-              Clear
-            </Button>
+            <button onClick={toggleTheme} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 9px", cursor: "pointer", fontSize: 15 }}>{dark ? "☀️" : "🌙"}</button>
+            {submitted && <button onClick={handleReset} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", color: textSecondary, fontSize: 13 }}>↺ New Submission</button>}
           </div>
         </div>
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
-          {messages.length === 0 && (
-            <Empty
-              icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
-              contents={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {[
-                    "What's the weather in Paris?",
-                    "What timezone am I in?",
-                    "Calculate 5000 * 3",
-                    "Remind me in 5 minutes to take a break"
-                  ].map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      disabled={isStreaming}
-                      onClick={() => {
-                        sendMessage({
-                          role: "user",
-                          parts: [{ type: "text", text: prompt }]
-                        });
-                      }}
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
-          )}
+      <div style={{ maxWidth: 820, margin: "0 auto", padding: "28px 24px" }}>
+        {!submitted && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {messages.map((message: UIMessage, index: number) => {
-            const isUser = message.role === "user";
-            const isLastAssistant =
-              message.role === "assistant" && index === messages.length - 1;
-
-            return (
-              <div key={message.id} className="space-y-2">
-                {showDebug && (
-                  <pre className="text-[11px] text-kumo-subtle bg-kumo-control rounded-lg p-3 overflow-auto max-h-64">
-                    {JSON.stringify(message, null, 2)}
-                  </pre>
+            {/* Step 1 */}
+            <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 22 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>Step 1 — Select Cornerstone Course</div>
+              <div ref={courseDropdownRef} style={{ position: "relative" }}>
+                <button onClick={() => setCourseOpen(!courseOpen)} style={{ width: "100%", padding: "11px 16px", borderRadius: 10, border: `1px solid ${selectedCourse ? accent : border}`, background: inputBg, color: selectedCourse ? text : textSecondary, fontSize: 14, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span>{selectedCourse ? course?.label : "Choose a course..."}</span>
+                  <span style={{ fontSize: 11, color: textSecondary }}>{courseOpen ? "▲" : "▼"}</span>
+                </button>
+                {courseOpen && (
+                  <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, background: surface, border: `1px solid ${border}`, borderRadius: 12, overflow: "hidden", zIndex: 20, boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
+                    {COURSES.map(c => (
+                      <button key={c.id} onClick={() => { if (!c.available) return; setSelectedCourse(c.id); setSelectedHCs([]); setCourseOpen(false); }} style={{ width: "100%", padding: "12px 16px", border: "none", background: selectedCourse === c.id ? (dark ? "#2d1f0e" : "#fff7ed") : "none", color: !c.available ? textSecondary : text, fontSize: 14, cursor: c.available ? "pointer" : "not-allowed", textAlign: "left", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${border}` }}>
+                        <span>{c.label}</span>
+                        {!c.available && <span style={{ fontSize: 11, color: textSecondary, background: dark ? "#2a2d3a" : "#f3f4f6", padding: "2px 8px", borderRadius: 20 }}>Coming soon</span>}
+                        {c.available && selectedCourse === c.id && <span style={{ color: accent }}>✓</span>}
+                      </button>
+                    ))}
+                  </div>
                 )}
-
-                {/* Tool parts */}
-                {message.parts.filter(isToolUIPart).map((part) => (
-                  <ToolPartView
-                    key={part.toolCallId}
-                    part={part}
-                    addToolApprovalResponse={addToolApprovalResponse}
-                  />
-                ))}
-
-                {/* Reasoning parts */}
-                {message.parts
-                  .filter(
-                    (part) =>
-                      part.type === "reasoning" &&
-                      (part as { text?: string }).text?.trim()
-                  )
-                  .map((part, i) => {
-                    const reasoning = part as {
-                      type: "reasoning";
-                      text: string;
-                      state?: "streaming" | "done";
-                    };
-                    const isDone = reasoning.state === "done" || !isStreaming;
-                    return (
-                      <div key={i} className="flex justify-start">
-                        <details className="max-w-[85%] w-full" open={!isDone}>
-                          <summary className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm select-none">
-                            <BrainIcon size={14} className="text-purple-400" />
-                            <span className="font-medium text-kumo-default">
-                              Reasoning
-                            </span>
-                            {isDone ? (
-                              <span className="text-xs text-kumo-success">
-                                Complete
-                              </span>
-                            ) : (
-                              <span className="text-xs text-kumo-brand">
-                                Thinking...
-                              </span>
-                            )}
-                            <CaretDownIcon
-                              size={14}
-                              className="ml-auto text-kumo-inactive"
-                            />
-                          </summary>
-                          <pre className="mt-2 px-3 py-2 rounded-lg bg-kumo-control text-xs text-kumo-default whitespace-pre-wrap overflow-auto max-h-64">
-                            {reasoning.text}
-                          </pre>
-                        </details>
-                      </div>
-                    );
-                  })}
-
-                {/* Text parts */}
-                {message.parts
-                  .filter((part) => part.type === "text")
-                  .map((part, i) => {
-                    const text = (part as { type: "text"; text: string }).text;
-                    if (!text) return null;
-
-                    if (isUser) {
-                      return (
-                        <div key={i} className="flex justify-end">
-                          <div className="max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md bg-kumo-contrast text-kumo-inverse leading-relaxed">
-                            {text}
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div key={i} className="flex justify-start">
-                        <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-kumo-base text-kumo-default leading-relaxed">
-                          <Streamdown
-                            className="sd-theme rounded-2xl rounded-bl-md p-3"
-                            controls={false}
-                            isAnimating={isLastAssistant && isStreaming}
-                          >
-                            {text}
-                          </Streamdown>
-                        </div>
-                      </div>
-                    );
-                  })}
               </div>
-            );
-          })}
+            </div>
 
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
+            {/* Step 2 */}
+            {selectedCourse && course?.available && (
+              <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 22 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em" }}>Step 2 — Select HCs <span style={{ color: accent }}>({selectedHCs.length} selected)</span></div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setSelectedHCs(course.hcs.map(h => h.id))} style={{ fontSize: 12, color: accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Select all</button>
+                    <span style={{ color: border }}>·</span>
+                    <button onClick={() => setSelectedHCs([])} style={{ fontSize: 12, color: textSecondary, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Clear</button>
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(185px, 1fr))", gap: 8 }}>
+                  {course.hcs.map(hc => {
+                    const isSelected = selectedHCs.includes(hc.id);
+                    return (
+                      <button key={hc.id} onClick={() => toggleHC(hc.id)} style={{ padding: "10px 13px", borderRadius: 10, border: `2px solid ${isSelected ? accent : border}`, background: isSelected ? (dark ? "#2d1f0e" : "#fff7ed") : inputBg, cursor: "pointer", textAlign: "left", transition: "all 0.12s" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: isSelected ? accent : text, marginBottom: 2 }}>{hc.label}</div>
+                        <div style={{ fontSize: 11, color: textSecondary, lineHeight: 1.3 }}>{hc.description}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
-      {/* Input */}
-      <div className="border-t border-kumo-line bg-kumo-base">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            send();
-          }}
-          className="max-w-3xl mx-auto px-5 py-4"
-        >
-          <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm focus-within:ring-2 focus-within:ring-kumo-ring focus-within:border-transparent transition-shadow">
-            <InputArea
-              ref={textareaRef}
-              value={input}
-              onValueChange={setInput}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              onInput={(e) => {
-                const el = e.currentTarget;
-                el.style.height = "auto";
-                el.style.height = `${el.scrollHeight}px`;
-              }}
-              placeholder="Send a message..."
-              disabled={!connected || isStreaming}
-              rows={1}
-              className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none! resize-none max-h-40"
-            />
-            {isStreaming ? (
-              <Button
-                type="button"
-                variant="secondary"
-                shape="square"
-                aria-label="Stop generation"
-                icon={<StopIcon size={18} />}
-                onClick={stop}
-                className="mb-0.5"
-              />
-            ) : (
-              <Button
-                type="submit"
-                variant="primary"
-                shape="square"
-                aria-label="Send message"
-                disabled={!input.trim() || !connected}
-                icon={<PaperPlaneRightIcon size={18} />}
-                className="mb-0.5"
-              />
+            {/* Step 3 */}
+            {selectedHCs.length > 0 && (
+              <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 22 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>Step 3 — What do you want?</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {MODES.map(mode => {
+                    const isSelected = selectedModes.includes(mode.id);
+                    return (
+                      <button key={mode.id} onClick={() => toggleMode(mode.id)} style={{ padding: "13px 16px", borderRadius: 10, border: `2px solid ${isSelected ? accent : border}`, background: isSelected ? (dark ? "#2d1f0e" : "#fff7ed") : inputBg, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 14, transition: "all 0.12s" }}>
+                        <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${isSelected ? accent : border}`, background: isSelected ? accent : "none", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12, color: "#fff" }}>{isSelected ? "✓" : ""}</div>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: text }}>{mode.label}</div>
+                          <div style={{ fontSize: 12, color: textSecondary }}>{mode.description}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Step 4 */}
+            {selectedHCs.length > 0 && selectedModes.length > 0 && (
+              <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 22 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>Step 4 — Paste Your Work</div>
+                <textarea value={studentWork} onChange={e => setStudentWork(e.target.value)} placeholder="Paste your work here — essay paragraph, footnote, presentation script, or any written submission..." rows={8} style={{ width: "100%", padding: "14px 16px", borderRadius: 10, border: `1px solid ${border}`, background: inputBg, color: text, fontSize: 14, lineHeight: 1.6, resize: "vertical", outline: "none", boxSizing: "border-box", fontFamily: "inherit" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+                  <span style={{ fontSize: 12, color: textSecondary }}>{studentWork.length > 0 ? `${studentWork.length} characters · ${selectedHCs.length} HC${selectedHCs.length > 1 ? "s" : ""} will be graded one at a time` : ""}</span>
+                  <button onClick={handleGrade} disabled={!canSubmit} style={{ padding: "12px 28px", borderRadius: 10, border: "none", background: canSubmit ? accent : (dark ? "#2a2d3a" : "#e5e7eb"), color: canSubmit ? "#fff" : textSecondary, fontSize: 14, fontWeight: 700, cursor: canSubmit ? "pointer" : "not-allowed" }}>
+                    Analyze My Work →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!selectedCourse && (
+              <div style={{ textAlign: "center", padding: "48px 20px", color: textSecondary }}>
+                <div style={{ fontSize: 52, marginBottom: 16 }}>📚</div>
+                <p style={{ fontSize: 16, margin: "0 0 8px", color: text, fontWeight: 600 }}>Welcome to HC Grader</p>
+                <p style={{ fontSize: 14, margin: "0 auto", maxWidth: 420, lineHeight: 1.6 }}>Select your Cornerstone course, pick the HCs you're being assessed on, and get instant grading, footnotes, and improvement tips.</p>
+              </div>
             )}
           </div>
-        </form>
+        )}
+
+        {/* Results */}
+        {messages.length > 0 && (
+          <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 24, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 16 }}>
+              Results {gradingQueue.length > 0 && currentHCIndex < gradingQueue.length && <span style={{ color: accent }}>· Grading {currentHCIndex} of {gradingQueue.length}...</span>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {messages.map((message: UIMessage) => {
+                const isUser = message.role === "user";
+                return (
+                  <div key={message.id} style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", alignItems: "flex-start", gap: 10 }}>
+                    {!isUser && <div style={{ width: 30, height: 30, borderRadius: 8, background: accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flexShrink: 0 }}>📋</div>}
+                    <div style={{ maxWidth: "88%", padding: isUser ? "10px 14px" : "14px 18px", borderRadius: isUser ? "16px 16px 4px 16px" : "16px 16px 16px 4px", background: isUser ? accent : (dark ? "#1e2130" : "#f3f4f6"), color: isUser ? "#fff" : text, fontSize: 14, lineHeight: 1.6 }}>
+                      {message.parts.filter(p => p.type === "text").map((part, i) => {
+                        const t = (part as { type: "text"; text: string }).text;
+                        if (!t) return null;
+                        if (isUser) {
+                          // Show a clean summary for grading messages, full text for follow-ups
+                          const isGradingMsg = t.includes("Student work:") || t.includes("same student work");
+                          if (isGradingMsg) {
+                            const hcMatch = t.match(/#\w+/g);
+                            const hcLabel = hcMatch ? hcMatch[0] : "HC";
+                            const num = t.match(/\((\d+) of (\d+)\)/);
+                            return <div key={i} style={{ fontSize: 13 }}>{num ? `Grading ${hcLabel} (${num[1]} of ${num[2]})` : `Grading ${hcLabel}`}</div>;
+                          }
+                          return <div key={i}>{t}</div>;
+                        }
+                        return <Streamdown key={i} className="sd-theme" controls={false} isAnimating={isStreaming}>{t}</Streamdown>;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {isStreaming && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📋</div>
+                  <div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: accent, animation: "bounce 1.2s infinite", animationDelay: `${i*0.2}s` }} />)}</div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+        )}
+
+        {/* Follow-up */}
+        {submitted && (
+          <div style={{ background: surface, borderRadius: 14, border: `1px solid ${border}`, padding: 20 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>Follow-up</div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleChat(); }} placeholder='e.g. "Rewrite my thesis" or "Why did I lose points on #medium?"' disabled={isStreaming} style={{ flex: 1, padding: "11px 14px", borderRadius: 10, border: `1px solid ${border}`, background: inputBg, color: text, fontSize: 14, outline: "none", fontFamily: "inherit" }} />
+              <button onClick={handleChat} disabled={!chatInput.trim() || isStreaming} style={{ padding: "11px 20px", borderRadius: 10, border: "none", background: chatInput.trim() && !isStreaming ? accent : (dark ? "#2a2d3a" : "#e5e7eb"), color: chatInput.trim() && !isStreaming ? "#fff" : textSecondary, fontSize: 14, fontWeight: 600, cursor: chatInput.trim() && !isStreaming ? "pointer" : "not-allowed" }}>Send</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {["Rewrite a weak section", "Improve my thesis", "Why did I lose points?", "What would a 5 look like?", "Write a better footnote"].map(p => (
+                <button key={p} onClick={() => setChatInput(p)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${border}`, background: "none", color: textSecondary, fontSize: 12, cursor: "pointer" }}>{p}</button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
+      <style>{`@keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}*{box-sizing:border-box}textarea:focus{border-color:#f6821f!important;box-shadow:0 0 0 3px #f6821f22}input:focus{border-color:#f6821f!important;box-shadow:0 0 0 3px #f6821f22}`}</style>
     </div>
   );
 }
 
 export default function App() {
   return (
-    <Toasty>
-      <Suspense
-        fallback={
-          <div className="flex items-center justify-center h-screen text-kumo-inactive">
-            Loading...
-          </div>
-        }
-      >
-        <Chat />
-      </Suspense>
-    </Toasty>
+    <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100vh" }}>Loading...</div>}>
+      <HCGrader />
+    </Suspense>
   );
 }

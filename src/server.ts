@@ -1,198 +1,53 @@
 import { createWorkersAI } from "workers-ai-provider";
-import { routeAgentRequest, callable, type Schedule } from "agents";
-import { getSchedulePrompt, scheduleSchema } from "agents/schedule";
+import { routeAgentRequest } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import {
-  streamText,
-  convertToModelMessages,
-  pruneMessages,
-  tool,
-  stepCountIs
-} from "ai";
-import { z } from "zod";
+import { streamText, convertToModelMessages } from "ai";
+
+const SYSTEM_PROMPT = `You are an HC grader for Minerva University. Be concise. Complete every section — never cut off.
+
+RUBRIC: 0=No Evidence, 1=Not Assessable, 2=Review Needed, 3=On Target, 4=Excellent, 5=Profound
+
+OUTPUT FORMAT (use exactly, keep each item to 1-2 lines max):
+
+## #[hcname] — [X]/5 — [Label]
+
+**Reflection Check**
+[Go through EACH guided reflection question. Mark ✅ if addressed, ❌ if not.]
+✅/❌ [Short version of question]
+[If ❌, add one line:] → Do this: [specific fix actually related to their work]
+
+**Pitfalls** (only ones student fell into, or "None")
+⚠️ [pitfall] → Fix: [one sentence offer to improve the paragraph with specific advice actually related to their work]
+
+**3 Steps to Improve** OR Just go ahead and rewrite the paragraph with improvements. If 3 steps, be specific and actionable, not vague.
+1. [action]
+2. [action]  
+3. [action]
+
+**What a 5 Looks Like** (if its a 4, because a grade can be a 3 and the next is a 4)
+[2 sentences max]
+
+**Footnote**
+[Written IN THE STUDENT'S VOICE (first person, "I"). This is a defense — explicitly show that you met each guided reflection question by referencing specific evidence from your work. Example:#communicationdesign: I applied the principles of perception and cognition to ensure clarity and focus. Discriminability was achieved by making titles bold, using black text on a light background, and keeping images clear so differences between elements were obvious. Perceptual organization guided the grouping of bullet points under their respective medium elements (repetition, alliteration, simile), keeping related ideas together for easier understanding. Salience was applied by highlighting key terms, such as sound patterns or repeated phrases in the poem, to draw attention to important details. Limited capacity was observed by including only three concise bullet points per section and showing the poem selectively with animations, so the audience could focus on each element without overload. Informative change was applied through animation timing, the poem appeared when discussing each device and disappeared when the focus returned to my explanation. Appropriate knowledge was addressed by defining culturally specific terms, like “yo,” so the audience could understand the poem. Compatibility was ensured through formal but readable design choices, including simple colors and layout matching the academic tone. Relevance was maintained by selecting only the most essential devices to analyze in depth, rather than overloading the audience with information. Finally, the inclusion of an image depicting child labor added emotional weight and context, enhancing comprehension and making the presentation more memorable. These strategies together helped the audience process, focus, and retain the information effectively, demonstrating the value of communication design principles in multimedia presentations. Additionally, slide template choices were deliberately minimal, I avoided pre-made or colorful themes that could distract from the content. Using a blank template allowed me to organize all information myself and maintain a formal, scholarly tone appropriate for the presentation’s purpose.
+
+For follow-up questions: answer directly and briefly. Never repeat the full grade report.`;
 
 export class ChatAgent extends AIChatAgent<Env> {
-  // Wait for MCP connections to restore after hibernation before processing messages
-  waitForMcpConnections = true;
-
-  onStart() {
-    // Configure OAuth popup behavior for MCP servers that require authentication
-    this.mcp.configureOAuthCallback({
-      customHandler: (result) => {
-        if (result.authSuccess) {
-          return new Response("<script>window.close();</script>", {
-            headers: { "content-type": "text/html" },
-            status: 200
-          });
-        }
-        return new Response(
-          `Authentication Failed: ${result.authError || "Unknown error"}`,
-          { headers: { "content-type": "text/plain" }, status: 400 }
-        );
-      }
-    });
-  }
-
-  @callable()
-  async addServer(name: string, url: string, host: string) {
-    return await this.addMcpServer(name, url, { callbackHost: host });
-  }
-
-  @callable()
-  async removeServer(serverId: string) {
-    await this.removeMcpServer(serverId);
-  }
-
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
-    const mcpTools = this.mcp.getAITools();
     const workersai = createWorkersAI({ binding: this.env.AI });
 
+    // Only keep last 6 messages to prevent context overflow on follow-ups
+    const allMessages = await convertToModelMessages(this.messages);
+    const trimmed = allMessages.length > 6 ? allMessages.slice(-6) : allMessages;
+
     const result = streamText({
-      model: workersai("@cf/zai-org/glm-4.7-flash"),
-      system: `You are a helpful assistant. You can check the weather, get the user's timezone, run calculations, and schedule tasks.
-
-${getSchedulePrompt({ date: new Date() })}
-
-If the user asks to schedule a task, use the schedule tool to schedule the task.`,
-      // Prune old tool calls to save tokens on long conversations
-      messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
-        toolCalls: "before-last-2-messages"
-      }),
-      tools: {
-        // MCP tools from connected servers
-        ...mcpTools,
-
-        // Server-side tool: runs automatically on the server
-        getWeather: tool({
-          description: "Get the current weather for a city",
-          inputSchema: z.object({
-            city: z.string().describe("City name")
-          }),
-          execute: async ({ city }) => {
-            // Replace with a real weather API in production
-            const conditions = ["sunny", "cloudy", "rainy", "snowy"];
-            const temp = Math.floor(Math.random() * 30) + 5;
-            return {
-              city,
-              temperature: temp,
-              condition:
-                conditions[Math.floor(Math.random() * conditions.length)],
-              unit: "celsius"
-            };
-          }
-        }),
-
-        // Client-side tool: no execute function — the browser handles it
-        getUserTimezone: tool({
-          description:
-            "Get the user's timezone from their browser. Use this when you need to know the user's local time.",
-          inputSchema: z.object({})
-        }),
-
-        // Approval tool: requires user confirmation before executing
-        calculate: tool({
-          description:
-            "Perform a math calculation with two numbers. Requires user approval for large numbers.",
-          inputSchema: z.object({
-            a: z.number().describe("First number"),
-            b: z.number().describe("Second number"),
-            operator: z
-              .enum(["+", "-", "*", "/", "%"])
-              .describe("Arithmetic operator")
-          }),
-          needsApproval: async ({ a, b }) =>
-            Math.abs(a) > 1000 || Math.abs(b) > 1000,
-          execute: async ({ a, b, operator }) => {
-            const ops: Record<string, (x: number, y: number) => number> = {
-              "+": (x, y) => x + y,
-              "-": (x, y) => x - y,
-              "*": (x, y) => x * y,
-              "/": (x, y) => x / y,
-              "%": (x, y) => x % y
-            };
-            if (operator === "/" && b === 0) {
-              return { error: "Division by zero" };
-            }
-            return {
-              expression: `${a} ${operator} ${b}`,
-              result: ops[operator](a, b)
-            };
-          }
-        }),
-
-        scheduleTask: tool({
-          description:
-            "Schedule a task to be executed at a later time. Use this when the user asks to be reminded or wants something done later.",
-          inputSchema: scheduleSchema,
-          execute: async ({ when, description }) => {
-            if (when.type === "no-schedule") {
-              return "Not a valid schedule input";
-            }
-            const input =
-              when.type === "scheduled"
-                ? when.date
-                : when.type === "delayed"
-                  ? when.delayInSeconds
-                  : when.type === "cron"
-                    ? when.cron
-                    : null;
-            if (!input) return "Invalid schedule type";
-            try {
-              this.schedule(input, "executeTask", description);
-              return `Task scheduled: "${description}" (${when.type}: ${input})`;
-            } catch (error) {
-              return `Error scheduling task: ${error}`;
-            }
-          }
-        }),
-
-        getScheduledTasks: tool({
-          description: "List all tasks that have been scheduled",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const tasks = this.getSchedules();
-            return tasks.length > 0 ? tasks : "No scheduled tasks found.";
-          }
-        }),
-
-        cancelScheduledTask: tool({
-          description: "Cancel a scheduled task by its ID",
-          inputSchema: z.object({
-            taskId: z.string().describe("The ID of the task to cancel")
-          }),
-          execute: async ({ taskId }) => {
-            try {
-              this.cancelSchedule(taskId);
-              return `Task ${taskId} cancelled.`;
-            } catch (error) {
-              return `Error cancelling task: ${error}`;
-            }
-          }
-        })
-      },
-      stopWhen: stepCountIs(5),
+      model: workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+      system: SYSTEM_PROMPT,
+      messages: trimmed,
       abortSignal: options?.abortSignal
     });
 
     return result.toUIMessageStreamResponse();
-  }
-
-  async executeTask(description: string, _task: Schedule<string>) {
-    // Do the actual work here (send email, call API, etc.)
-    console.log(`Executing scheduled task: ${description}`);
-
-    // Notify connected clients via a broadcast event.
-    // We use broadcast() instead of saveMessages() to avoid injecting
-    // into chat history — that would cause the AI to see the notification
-    // as new context and potentially loop.
-    this.broadcast(
-      JSON.stringify({
-        type: "scheduled-task",
-        description,
-        timestamp: new Date().toISOString()
-      })
-    );
   }
 }
 
