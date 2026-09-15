@@ -1,12 +1,14 @@
 {
-  "name": "agent-starter",
+  "name": "hc-grader",
   "version": "1.0.0",
   "private": true,
-  "description": "Starter template for building AI chat agents on Cloudflare",
+  "description": "Full-stack AI grading assistant built on Cloudflare Workers AI, Durable Objects, and React",
   "keywords": [
-    "agents",
-    "ai",
-    "cloudflare"
+    "cloudflare",
+    "workers-ai",
+    "durable-objects",
+    "react",
+    "ai-agent"
   ],
   "license": "MIT",
   "type": "module",
