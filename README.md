@@ -1,88 +1,115 @@
 # HC Grader — AI-Powered Habit of Mind Grading Agent
 
-A full-stack AI agent built on Cloudflare that grades student work for Minerva University's Multimodal Communications course using the Habits of Mind (HC) framework.
+HC Grader is a full-stack AI grading assistant built on Cloudflare for rubric-based feedback on written work. It supports structured grading, guided-reflection checks, improvement suggestions, generated footnotes, and follow-up chat across all 17 Multimodal Communications Habits of Mind.
 
 ## Live Demo
 
-🚀 [https://agent-starter.tiffany-elangwa.workers.dev](https://agent-starter.tiffany-elangwa.workers.dev)
+🚀 [Open HC Grader](https://agent-starter.tiffany-elangwa.workers.dev)
 
 ## What It Does
 
-Students paste their written work, select which HCs they are being assessed on, and get instant structured feedback including:
+Students paste their work, select one or more Habits of Mind, and receive structured feedback including:
 
-- **0–5 score** with rubric label (No Evidence → Profound)
-- **Guided Reflection Checklist** — each reflection question marked ✅ met or ❌ missed, with specific advice on how to fix gaps
-- **Pitfalls Flagged** — only the pitfalls the student actually fell into, with how to avoid them
-- **3 Steps to Improve** — concrete, actionable next steps
-- **What a 5 Looks Like** — a description of a Profound response for their specific work
-- **Footnote** (optional) — written in the student's voice defending how they met the HC
-- **Follow-up chat** — ask questions like "why did I lose points?" or "rewrite my thesis"
+- **0–5 rubric score** with performance label
+- **Guided Reflection Checklist** with met/missed criteria
+- **Pitfalls Flagged** only when relevant to the submitted work
+- **Actionable improvement steps** tied to the student's response
+- **"What a 5 Looks Like"** guidance
+- **Optional footnote generation** written in the student's voice
+- **Follow-up chat** for questions, revisions, and clarification
 
-## Cloudflare Architecture
+## Architecture
 
-| Component | Cloudflare Tool |
-|---|---|
-| LLM inference | Workers AI (Llama 3.3 70B) |
+```text
+React UI
+   ↓
+Cloudflare Agents SDK / WebSocket
+   ↓
+Durable Object session (ChatAgent)
+   ↓
+Workers AI — Llama 3.3 70B
+   ↓
+Streamed structured feedback
+```
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite |
+| AI inference | Cloudflare Workers AI — Llama 3.3 70B |
+| Backend | Cloudflare Workers |
 | Stateful sessions | Durable Objects |
-| Backend logic | Cloudflare Workers |
-| Frontend hosting | Cloudflare Pages |
-| Real-time streaming | WebSockets via Agents SDK |
+| Real-time communication | WebSockets via Cloudflare Agents SDK |
+| Validation / tooling | Zod, Wrangler, Oxlint, TypeScript |
 
-## How to Run Locally
+## Engineering Highlights
+
+### Sequential grading orchestration
+
+Grading multiple HCs in a single model request originally exceeded the model's context window and produced truncated responses. The frontend now queues selected HCs and grades them **one at a time**, injecting only the relevant HC definition for each request. This keeps each grading pass focused while still automating a multi-HC workflow.
+
+### Context management
+
+Follow-up conversations retain only the most recent messages before inference, preventing chat history from growing indefinitely and reducing the risk of context-window overflow.
+
+### Stateful session isolation
+
+Each grading session runs through a Cloudflare Durable Object-backed `ChatAgent`, keeping conversational state isolated by session rather than sharing mutable state across users.
+
+### Structured rubric grounding
+
+HC definitions, guided-reflection questions, and common pitfalls are stored separately from the application logic and injected only when needed, keeping grading prompts scoped to the selected criterion.
+
+## How to Use
+
+1. Select **Multimodal Communications**.
+2. Choose one or more HCs.
+3. Select the outputs you want: grading, footnote, and/or improvement tips.
+4. Paste your work.
+5. Click **Analyze My Work**.
+6. Use follow-up chat to ask questions or request revisions.
+
+## Run Locally
 
 ### Prerequisites
-- Node.js v18+
+
+- Node.js 18+
 - Cloudflare account
 - Wrangler CLI
 
-### Setup
-
 ```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/cf_ai_hcgrader
+git clone https://github.com/tiffanyelangwa/cf_ai_hcgrader.git
 cd cf_ai_hcgrader
-
-# Install dependencies
 npm install
-
-# Login to Cloudflare
 wrangler login
-
-# Run locally (use phone hotspot if on university WiFi)
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Open `http://localhost:5173`.
 
-### Deploy to Cloudflare
+### Deploy
 
 ```bash
 npm run deploy
 ```
 
-## How to Use
-
-1. Select **Multimodal Communications** from the course dropdown
-2. Select one or more HCs to be graded on
-3. Choose what you want: Grade / Footnote / Tips
-4. Paste your written work
-5. Click **Analyze My Work**
-6. Use the follow-up chat to ask questions or request rewrites
-
 ## Project Structure
 
-```
+```text
 src/
-  server.ts        # Cloudflare Worker — AI agent logic, grading system prompt
-  app.tsx          # React frontend — UI, sequential grading orchestration  
-  hc-content.ts    # HC definitions lookup (guided reflections, pitfalls, etc.)
-  client.tsx       # WebSocket client connection
-  style.css        # Styling
+  server.ts        # Worker, ChatAgent, model inference, context management
+  app.tsx          # React UI and sequential grading orchestration
+  hc-content.ts    # HC definitions, guided reflections, and pitfalls
+  client.tsx       # Client bootstrap / agent connection
+  styles.css       # Global styles
 ```
 
-## Courses Supported
+## Current Scope
 
-- ✅ Multimodal Communications (17 HCs)
-- 🔜 Empirical Analyses (coming soon)
-- 🔜 Complex Systems (coming soon)
-- 🔜 Formal Analyses (coming soon)
+- ✅ Multimodal Communications — 17 HCs
+- 🔜 Empirical Analyses
+- 🔜 Complex Systems
+- 🔜 Formal Analyses
+
+## Project Status
+
+HC Grader is deployed and functional. Current development focuses on expanding course coverage and refining the grading experience while preserving session isolation and bounded model context.
