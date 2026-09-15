@@ -1,38 +1,40 @@
-# AI Prompts Used
+# Development Notes
 
-This project was built with significant assistance from Claude (Anthropic). Below are the key prompts used during development.
+This document summarizes the main engineering decisions and debugging lessons from building HC Grader.
 
-## Architecture & Planning
+## Architecture
 
-> "I have to do a Cloudflare AI app assignment. The requirements are: LLM, Workflow/coordination, User input via chat or voice, Memory or state. I want to build an HC grader for Minerva University — someone selects the HC, pastes in their work, and the chatbot grades it with the rubric (0-5) and tells them what to improve."
+The application combines a React frontend with Cloudflare Workers AI, Durable Objects, and the Cloudflare Agents SDK. Grading requests are streamed back to the client over an agent connection while each session keeps its own conversational state.
 
-> "What fancy tech tools will we use that I can put on my resume?"
+## Prompt and rubric design
 
-> "Can the HC content be in a separate file instead of hardcoded in server.ts?"
+The grader is grounded in per-HC rubric content, including guided reflection questions and common pitfalls. HC definitions are stored separately from the core application logic and injected only for the criterion currently being graded.
 
-## System Prompt Engineering
+The response format is intentionally structured so students receive:
 
-> "I want the grading feedback to focus on guided reflection questions and common pitfalls. Show all reflection questions with ✅ pass / ❌ miss, and if they missed one tell them what to do to improve. Only flag the pitfalls they fell into and say how to avoid it."
+- a rubric score and label
+- guided-reflection checks
+- relevant pitfalls
+- concrete improvement steps
+- an optional first-person footnote
+- follow-up chat support
 
-> "Footnotes are written in the student's voice (first person) defending that the work applied the HC properly — explicitly referencing examples from their work to show they met each guided reflection question."
+## Context-window debugging
 
-## Bug Fixes
+An early multi-HC implementation exceeded the model context limit (29,230 estimated tokens against a 24,000-token window) and could also truncate long outputs.
 
-> "It only graded one HC instead of all selected ones. In the follow-up I asked why and it just repeated the same answer."
+The grading flow was redesigned to process selected HCs sequentially. Each grading pass receives only the relevant HC definition, which keeps requests smaller and allows every selected criterion to receive a complete response.
 
-> "The estimated number of input and maximum output tokens (29,230) exceeded this model context window limit (24,000)."
+Follow-up chat also keeps only the most recent conversation messages before inference to prevent unbounded context growth.
 
-> "It still stopped midway — the model is hitting a token limit on the output side."
+## Session isolation
 
-> "Program sequential grading — grade one HC at a time automatically so each gets a complete response."
+Each conversation is handled through a Durable Object-backed `ChatAgent`, keeping state scoped to an individual grading session rather than sharing mutable chat state across users.
 
-## UI Design
+## UI orchestration
 
-> "Allow multiple HC selection. Since the end design is to have 4 cornerstones, put a dropdown for course selection, multi-select for HCs, and checkboxes for what they want: footnotes, grading with rubric, tips on what to improve."
+The interface supports course selection, multi-select HC grading, optional grading/footnote/tips outputs, streamed responses, dark mode, progress state, and follow-up questions after the initial analysis.
 
-> "I can't see what I typed — user messages show 'Submitted X for analysis' instead of my actual text."
+## Deployment notes
 
-## Deployment
-
-> "University WiFi is blocking Cloudflare SSL connections — ssl/tls alert handshake failure."
-> Fixed by switching to phone hotspot for development.
+The app is deployed on Cloudflare and can also be run locally with Vite and Wrangler. The current deployed scope supports all 17 Multimodal Communications HCs, with additional course coverage planned.
