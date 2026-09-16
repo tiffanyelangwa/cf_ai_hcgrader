@@ -22,6 +22,7 @@
     "check": "oxfmt --check . && oxlint src/ && tsc"
   },
   "dependencies": {
+    "@ai-sdk/react": "^3.0.286",
     "@cloudflare/ai-chat": "^0.12.0",
     "@cloudflare/kumo": "^1.9.0",
     "@phosphor-icons/react": "^2.1.10",

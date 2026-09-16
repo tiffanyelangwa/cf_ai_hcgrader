@@ -1,7 +1,7 @@
 import { createWorkersAI } from "workers-ai-provider";
 import { routeAgentRequest } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { convertToModelMessages, streamText } from "ai";
+import { convertToModelMessages, generateText, streamText } from "ai";
 
 const SYSTEM_PROMPT = `You are HC Grader, a concise rubric-based feedback assistant for Minerva University coursework.
 
@@ -59,10 +59,17 @@ export class ChatAgent extends AIChatAgent<Env> {
     const allMessages = await convertToModelMessages(this.messages);
     const trimmed =
       allMessages.length > 6 ? allMessages.slice(-6) : allMessages;
+    const body = options?.body;
+    const gradingContext =
+      body && typeof body === "object" && "gradingContext" in body
+        ? String((body as { gradingContext?: string }).gradingContext || "")
+        : "";
 
     const result = streamText({
       model: workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
-      system: SYSTEM_PROMPT,
+      system: gradingContext
+        ? `${SYSTEM_PROMPT}\n\nCompleted grading context:\n${gradingContext}`
+        : SYSTEM_PROMPT,
       messages: trimmed,
       abortSignal: options?.abortSignal
     });
@@ -71,8 +78,72 @@ export class ChatAgent extends AIChatAgent<Env> {
   }
 }
 
+type GradeRequest = {
+  hcLabel: string;
+  hcDefinition: string;
+  studentWork: string;
+  includeGrade: boolean;
+  includeFootnote: boolean;
+  includeTips: boolean;
+};
+
+async function handleGradeRequest(request: Request, env: Env) {
+  let body: GradeRequest;
+
+  try {
+    body = (await request.json()) as GradeRequest;
+  } catch {
+    return Response.json({ error: "Invalid grading request." }, { status: 400 });
+  }
+
+  if (
+    !body.hcLabel ||
+    !body.hcDefinition ||
+    !body.studentWork?.trim() ||
+    (!body.includeGrade && !body.includeFootnote && !body.includeTips)
+  ) {
+    return Response.json({ error: "Incomplete grading request." }, { status: 400 });
+  }
+
+  const requestedOutput = [
+    `Grade report: ${body.includeGrade ? "yes" : "no"}`,
+    `Improvement tips: ${body.includeTips ? "yes" : "no"}`,
+    `Footnote: ${body.includeFootnote ? "yes" : "no"}`
+  ].join("\n");
+
+  const prompt = `## HC GRADING REQUEST
+HC: ${body.hcLabel}
+
+## REQUESTED OUTPUT
+${requestedOutput}
+
+## HC DEFINITION
+${body.hcDefinition}
+
+## STUDENT WORK
+${body.studentWork.trim()}`;
+
+  const workersai = createWorkersAI({ binding: env.AI });
+  const result = await generateText({
+    model: workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+    system: SYSTEM_PROMPT,
+    prompt
+  });
+
+  return Response.json({ text: result.text });
+}
+
 export default {
   async fetch(request: Request, env: Env) {
+    if (new URL(request.url).pathname === "/api/grade" && request.method === "POST") {
+      try {
+        return await handleGradeRequest(request, env);
+      } catch (error) {
+        console.error("Grading request failed", error);
+        return Response.json({ error: "The grading request failed." }, { status: 500 });
+      }
+    }
+
     return (
       (await routeAgentRequest(request, env)) ||
       new Response("Not found", { status: 404 })
