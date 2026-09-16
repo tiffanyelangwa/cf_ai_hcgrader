@@ -142,8 +142,7 @@ function HCGrader() {
     if (
       !selectedHCs.length ||
       !studentWork.trim() ||
-      !selectedModes.length ||
-      !connected
+      !selectedModes.length
     ) {
       return;
     }
@@ -198,7 +197,6 @@ function HCGrader() {
     if (gradingRunRef.current === gradingRun) setAwaitingResponse(false);
   }, [
     clearHistory,
-    connected,
     selectedHCs,
     selectedCourse,
     selectedModes,
@@ -255,8 +253,7 @@ function HCGrader() {
   const canSubmit =
     selectedHCs.length > 0 &&
     studentWork.trim().length > 0 &&
-    selectedModes.length > 0 &&
-    connected;
+    selectedModes.length > 0;
 
   const completedCount = Math.min(currentHCIndex, gradingQueue.length);
   const gradingProgress =
