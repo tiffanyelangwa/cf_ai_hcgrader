@@ -819,8 +819,12 @@ ${studentWork.trim()}`;
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {messages.map((message: UIMessage) => {
+              {messages.map((message: UIMessage, messageIndex) => {
                 const isUser = message.role === "user";
+                const isLiveAssistantMessage =
+                  !isUser &&
+                  isStreaming &&
+                  messageIndex === messages.length - 1;
 
                 return (
                   <div
@@ -896,12 +900,20 @@ ${studentWork.trim()}`;
                             return <div key={index}>{value}</div>;
                           }
 
+                          if (isLiveAssistantMessage) {
+                            return (
+                              <div key={index} style={{ whiteSpace: "pre-wrap" }}>
+                                {value}
+                              </div>
+                            );
+                          }
+
                           return (
                             <Streamdown
                               key={index}
                               className="sd-theme"
                               controls={false}
-                              isAnimating={isStreaming}
+                              isAnimating={false}
                             >
                               {value}
                             </Streamdown>
