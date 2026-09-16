@@ -130,7 +130,7 @@ function HCGrader() {
     if (!awaitingResponse || isStreaming) return;
 
     const assistantCount = messages.filter(
-      message => message.role === "assistant"
+      (message: UIMessage) => message.role === "assistant"
     ).length;
 
     if (assistantCount > assistantCountBeforeSendRef.current) {
@@ -175,7 +175,7 @@ ${hcDefinition}
 ${studentWork.trim()}`;
 
     assistantCountBeforeSendRef.current = messages.filter(
-      item => item.role === "assistant"
+      (item: UIMessage) => item.role === "assistant"
     ).length;
     setAwaitingResponse(true);
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
@@ -819,7 +819,7 @@ ${studentWork.trim()}`;
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {messages.map((message: UIMessage, messageIndex) => {
+              {messages.map((message: UIMessage, messageIndex: number) => {
                 const isUser = message.role === "user";
                 const isLiveAssistantMessage =
                   !isUser &&
