@@ -75,10 +75,14 @@ function HCGrader() {
   const [gradingQueue, setGradingQueue] = useState<string[]>([]);
   const [currentHCIndex, setCurrentHCIndex] = useState(0);
   const [awaitingResponse, setAwaitingResponse] = useState(false);
+  const [gradingResults, setGradingResults] = useState<
+    { hcId: string; text: string }[]
+  >([]);
+  const [gradingError, setGradingError] = useState("");
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const courseDropdownRef = useRef<HTMLDivElement>(null);
-  const assistantCountBeforeSendRef = useRef(0);
+  const gradingRunRef = useRef(0);
 
   useEffect(() => {
     const saved = localStorage.getItem("theme");
@@ -119,80 +123,22 @@ function HCGrader() {
     onClose: useCallback(() => setConnected(false), [])
   });
 
-  const { messages, sendMessage, clearHistory, status } = useAgentChat({ agent });
+  const { messages, sendMessage, clearHistory, status } = useAgentChat({
+    agent,
+    resume: false,
+    body: () => ({
+      gradingContext: gradingResults
+        .map(result => `${result.hcId}:\n${result.text}`)
+        .join("\n\n")
+    })
+  });
   const isStreaming = status === "streaming" || status === "submitted";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  useEffect(() => {
-    if (!awaitingResponse || isStreaming) return;
-
-    const assistantCount = messages.filter(
-      (message: UIMessage) => message.role === "assistant"
-    ).length;
-
-    if (assistantCount > assistantCountBeforeSendRef.current) {
-      setAwaitingResponse(false);
-      setCurrentHCIndex(index => index + 1);
-    }
-  }, [awaitingResponse, isStreaming, messages]);
-
-  useEffect(() => {
-    if (!submitted) return;
-    if (gradingQueue.length === 0) return;
-    if (currentHCIndex >= gradingQueue.length) return;
-    if (awaitingResponse || isStreaming) return;
-
-    const hcId = gradingQueue[currentHCIndex];
-    const course = COURSES.find(item => item.id === selectedCourse);
-    const hc = course?.hcs.find(item => item.id === hcId);
-    if (!hc) return;
-
-    const includeGrade = selectedModes.includes("grade");
-    const includeFootnote = selectedModes.includes("footnote");
-    const includeTips = selectedModes.includes("tips");
-    const hcDefinition = HC_DATA[hcId] || "";
-
-    const requestedOutput = [
-      `Grade report: ${includeGrade ? "yes" : "no"}`,
-      `Improvement tips: ${includeTips ? "yes" : "no"}`,
-      `Footnote: ${includeFootnote ? "yes" : "no"}`
-    ].join("\n");
-
-    const message = `## HC GRADING REQUEST
-HC: ${hc.label}
-Item: ${currentHCIndex + 1} of ${gradingQueue.length}
-
-## REQUESTED OUTPUT
-${requestedOutput}
-
-## HC DEFINITION
-${hcDefinition}
-
-## STUDENT WORK
-${studentWork.trim()}`;
-
-    assistantCountBeforeSendRef.current = messages.filter(
-      (item: UIMessage) => item.role === "assistant"
-    ).length;
-    setAwaitingResponse(true);
-    sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
-  }, [
-    awaitingResponse,
-    currentHCIndex,
-    gradingQueue,
-    isStreaming,
-    messages,
-    selectedCourse,
-    selectedModes,
-    sendMessage,
-    studentWork,
-    submitted
-  ]);
-
-  const handleGrade = useCallback(() => {
+  const handleGrade = useCallback(async () => {
     if (
       !selectedHCs.length ||
       !studentWork.trim() ||
@@ -203,14 +149,58 @@ ${studentWork.trim()}`;
     }
 
     clearHistory();
-    setGradingQueue([...selectedHCs]);
+    const gradingRun = ++gradingRunRef.current;
+    const queue = [...selectedHCs];
+    setGradingQueue(queue);
     setCurrentHCIndex(0);
-    setAwaitingResponse(false);
+    setGradingResults([]);
+    setGradingError("");
+    setAwaitingResponse(true);
     setSubmitted(true);
+
+    const includeGrade = selectedModes.includes("grade");
+    const includeFootnote = selectedModes.includes("footnote");
+    const includeTips = selectedModes.includes("tips");
+
+    for (const [index, hcId] of queue.entries()) {
+      const hc = COURSES.find(item => item.id === selectedCourse)?.hcs.find(
+        item => item.id === hcId
+      );
+      if (!hc) continue;
+
+      try {
+        const response = await fetch("/api/grade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hcLabel: hc.label,
+            hcDefinition: HC_DATA[hcId] || "",
+            studentWork: studentWork.trim(),
+            includeGrade,
+            includeFootnote,
+            includeTips
+          })
+        });
+        const result = (await response.json()) as { text?: string; error?: string };
+        if (gradingRunRef.current !== gradingRun) return;
+        if (!response.ok || !result.text) {
+          throw new Error(result.error || "The grading request failed.");
+        }
+        setGradingResults(previous => [...previous, { hcId, text: result.text! }]);
+        setCurrentHCIndex(index + 1);
+      } catch (error) {
+        if (gradingRunRef.current !== gradingRun) return;
+        setGradingError(error instanceof Error ? error.message : "The grading request failed.");
+        break;
+      }
+    }
+
+    if (gradingRunRef.current === gradingRun) setAwaitingResponse(false);
   }, [
     clearHistory,
     connected,
     selectedHCs,
+    selectedCourse,
     selectedModes,
     studentWork
   ]);
@@ -225,6 +215,7 @@ ${studentWork.trim()}`;
   }, [awaitingResponse, chatInput, isStreaming, sendMessage]);
 
   const handleReset = () => {
+    gradingRunRef.current += 1;
     clearHistory();
     setSelectedCourse("");
     setSelectedHCs([]);
@@ -235,6 +226,8 @@ ${studentWork.trim()}`;
     setGradingQueue([]);
     setCurrentHCIndex(0);
     setAwaitingResponse(false);
+    setGradingResults([]);
+    setGradingError("");
   };
 
   const course = COURSES.find(item => item.id === selectedCourse);
@@ -270,6 +263,9 @@ ${studentWork.trim()}`;
     submitted && gradingQueue.length > 0 && completedCount < gradingQueue.length
       ? `Grading ${completedCount + 1} of ${gradingQueue.length} HCs...`
       : null;
+
+  const hasResults =
+    gradingResults.length > 0 || awaitingResponse || Boolean(gradingError) || messages.length > 0;
 
   return (
     <div
@@ -795,7 +791,7 @@ ${studentWork.trim()}`;
           </div>
         )}
 
-        {messages.length > 0 && (
+        {hasResults && (
           <section
             style={{
               background: surface,
@@ -819,6 +815,28 @@ ${studentWork.trim()}`;
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {gradingResults.map(result => (
+                <div
+                  key={result.hcId}
+                  style={{
+                    padding: "14px 18px",
+                    borderRadius: "16px 16px 16px 4px",
+                    background: dark ? "#1e2130" : "#f3f4f6",
+                    color: text,
+                    fontSize: 14,
+                    lineHeight: 1.6
+                  }}
+                >
+                  <Streamdown className="sd-theme" controls={false} isAnimating={false}>
+                    {result.text}
+                  </Streamdown>
+                </div>
+              ))}
+
+              {gradingError && (
+                <div style={{ color: "#dc2626", fontSize: 14 }}>{gradingError}</div>
+              )}
+
               {messages.map((message: UIMessage, messageIndex: number) => {
                 const isUser = message.role === "user";
                 const isLiveAssistantMessage =
